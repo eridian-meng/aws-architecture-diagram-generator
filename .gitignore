@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.pycache_tmp/
+
+# Local environment
+.DS_Store
+venv/
+aws-icon-package.zip
+aws-icons/__MACOSX/
+
+# Live account exports should not be committed by default
+diagrams/*-prod-vpc*.drawio
+diagrams/*-prod-vpc*.svg
+diagrams/*-prod-vpc*.html
+diagrams/*-prod-vpc*.png

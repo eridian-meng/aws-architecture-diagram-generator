@@ -1,0 +1,1 @@
+"""AWS diagram generator package."""

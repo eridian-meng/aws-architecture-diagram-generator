@@ -1,0 +1,4 @@
+# No third-party Python dependencies are required currently.
+# This file is intentionally empty so `python3 -m pip install -r requirements.txt`
+# succeeds without pulling packages from the network.
+# Live discovery depends on the local AWS CLI, not a Python SDK.

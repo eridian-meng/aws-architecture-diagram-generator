@@ -1,0 +1,158 @@
+blueprint:
+  id: baseline-network-v1
+  name: Baseline AWS Network Blueprint
+  purpose: >
+    Default architecture layout for rendering a clean AWS network-focused
+    diagram from discovered account resources.
+
+  input_contract:
+    required:
+      - account_id
+      - region
+    optional:
+      - vpc_id
+      - include_bastion
+      - include_endpoints
+      - include_shared_storage
+
+  layout:
+    orientation: top-to-bottom
+    strategy: mirrored-multi-az
+    min_az_count: 2
+    preferred_az_count: 3
+    flow_lanes: reserved-between-tiers
+    side_panels:
+      - legend
+      - flow_steps
+      - route_tables_when_needed
+    tiers:
+      - edge
+      - public-network
+      - private-application
+      - private-data
+      - shared-services
+
+  boundaries:
+    - type: aws_cloud
+      required: true
+    - type: region
+      required: true
+    - type: vpc
+      required: true
+    - type: availability_zone
+      required: true
+      repeat: per_az
+    - type: subnet
+      required: true
+      repeat: per_subnet_group
+
+  default_nodes:
+    - id: internet
+      kind: external
+      label: Internet / External Users
+      tier: edge
+
+    - id: internet_gateway
+      kind: aws.network.internet_gateway
+      label: Internet Gateway
+      tier: public-network
+
+    - id: alb
+      kind: aws.network.application_load_balancer
+      label: Application Load Balancer
+      tier: public-network
+      placement: per_az_or_regional
+
+    - id: nat_gateway
+      kind: aws.network.nat_gateway
+      label: NAT Gateway
+      tier: public-network
+      placement: per_az_if_needed
+
+    - id: bastion
+      kind: aws.compute.bastion
+      label: Bastion / Admin Access
+      tier: public-network
+      optional: true
+
+    - id: app_tier
+      kind: aws.compute.app_tier
+      label: App Tier
+      tier: private-application
+      placement: per_az
+
+    - id: data_tier
+      kind: aws.data.primary_store
+      label: Data Tier
+      tier: private-data
+      placement: zonal_or_regional
+
+    - id: shared_storage
+      kind: aws.storage.shared
+      label: Shared Storage
+      tier: shared-services
+      optional: true
+
+    - id: vpc_endpoints
+      kind: aws.network.vpc_endpoints
+      label: VPC Endpoints
+      tier: shared-services
+      optional: true
+
+  default_edges:
+    - from: internet
+      to: internet_gateway
+      meaning: inbound_entry
+
+    - from: internet_gateway
+      to: alb
+      meaning: ingress_to_load_balancer
+
+    - from: alb
+      to: app_tier
+      meaning: load_balanced_app_traffic
+
+    - from: app_tier
+      to: data_tier
+      meaning: application_to_data
+
+    - from: app_tier
+      to: nat_gateway
+      meaning: outbound_internet_egress
+      conditional: private_workloads_need_egress
+
+    - from: app_tier
+      to: vpc_endpoints
+      meaning: private_aws_service_access
+      conditional: endpoints_exist
+
+    - from: app_tier
+      to: shared_storage
+      meaning: shared_filesystem_access
+      conditional: shared_storage_exists
+
+  normalization_rules:
+    - group resources by vpc
+    - choose one primary vpc per diagram unless the user requests multiple
+    - group subnets by availability zone and role
+    - map compute resources into the application tier
+    - map databases and persistent stores into the data tier
+    - preserve explicit group ownership for auto scaling groups, security groups, and clusters
+    - render a resource in one primary visual group only
+    - collapse repeated low-level network objects unless the user requests detail
+    - preserve edges that explain meaningful traffic flow
+
+  rendering_rules:
+    - use official AWS architecture icons in final output
+    - do not use placeholder blocks in production diagrams
+    - align icons and labels to a consistent grid
+    - avoid line crossings where possible
+    - use orthogonal connectors and reserved routing lanes between tiers
+    - do not route traffic lines through icons, labels, or group containers
+    - use distinct connector styles for different network or control-plane flow types when needed
+    - place legends, flow-step callouts, and route-table callouts in reserved side panels
+    - prefer concise labels over raw resource IDs
+    - keep text in dedicated whitespace and wrap long labels before shrinking font size
+    - show group containers only when they add meaning and place members only inside their owning group
+    - show resource IDs as annotations only when needed
+    - keep the primary diagram high signal and network focused
