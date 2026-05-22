@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+import os
 from pathlib import Path
 
 
-ICON_ROOT = Path(__file__).resolve().parents[2] / "aws-icons"
+PROJECT_ROOT = Path(os.environ.get("AWS_DIAGRAM_HOME", Path(__file__).resolve().parents[2]))
+ICON_ROOT = PROJECT_ROOT / "aws-icons"
 
 
 ICON_PATHS = {

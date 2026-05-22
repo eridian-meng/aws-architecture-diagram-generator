@@ -91,3 +91,31 @@ Route tables are hidden by default. Include them only when needed:
 ```bash
 python3 -m aws_diagram.cli --account <acct> --region <region> --vpc <vpc-id-or-name> --show-routes --output diagrams/<name>.svg
 ```
+
+## Global `draw` Command
+
+Install a global wrapper for this checkout with:
+
+```bash
+scripts/install-draw-wrapper.sh
+```
+
+The wrapper installs this project into the repo virtualenv in editable mode and writes `~/.local/bin/draw`. After `~/.local/bin` is on your `PATH`, the command can be run from any directory:
+
+```bash
+draw --account <acct> --region <region> --vpc <vpc-id-or-name> --output diagrams/<name>.svg
+```
+
+Relative `--output` paths are resolved from the directory where you run `draw`, not from this repository.
+
+By default, `draw` writes only the requested SVG file. Add `--drawio` when you also want the matching draw.io file:
+
+```bash
+draw --account <acct> --region <region> --vpc <vpc-id-or-name> --output diagrams/<name>.svg --drawio
+```
+
+To create only a draw.io file, use a `.drawio` output path:
+
+```bash
+draw --account <acct> --region <region> --vpc <vpc-id-or-name> --output diagrams/<name>.drawio
+```

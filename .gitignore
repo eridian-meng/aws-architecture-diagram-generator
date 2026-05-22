@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .pycache_tmp/
+*.egg-info/
 
 # Local environment
 .DS_Store

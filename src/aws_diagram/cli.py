@@ -14,7 +14,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         default="diagrams/generated-sample.svg",
-        help="Primary output path; the matching .svg and .drawio companion files are always written",
+        help="Output path; writes SVG by default, or draw.io when the path ends in .drawio",
+    )
+    parser.add_argument(
+        "--drawio",
+        action="store_true",
+        help="Also write a matching .drawio file when the output path is SVG",
     )
     parser.add_argument("--profile", help="AWS profile to use for live discovery; defaults to AWS CLI resolution")
     parser.add_argument("--account", help="AWS account ID to validate and render")
@@ -29,10 +34,10 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     output_path = Path(args.output)
-    svg_path = output_path if output_path.suffix.lower() != ".drawio" else output_path.with_suffix(".svg")
-    drawio_path = output_path if output_path.suffix.lower() == ".drawio" else output_path.with_suffix(".drawio")
-    svg_path.parent.mkdir(parents=True, exist_ok=True)
-    drawio_path.parent.mkdir(parents=True, exist_ok=True)
+    output_is_drawio = output_path.suffix.lower() == ".drawio"
+    svg_path = output_path if not output_is_drawio else None
+    drawio_path = output_path if output_is_drawio else output_path.with_suffix(".drawio")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     if args.profile or args.account or args.region or args.vpc:
         missing = [name for name, value in (("account", args.account), ("region", args.region), ("vpc", args.vpc)) if not value]
         if missing:
@@ -46,10 +51,13 @@ def main() -> int:
         )
     else:
         model = build_sample_model(show_routes=args.show_routes)
-    render_svg_to_file(model, svg_path)
-    render_drawio_to_file(model, drawio_path)
-    print(svg_path)
-    print(drawio_path)
+    if svg_path:
+        render_svg_to_file(model, svg_path)
+        print(svg_path)
+    if output_is_drawio or args.drawio:
+        drawio_path.parent.mkdir(parents=True, exist_ok=True)
+        render_drawio_to_file(model, drawio_path)
+        print(drawio_path)
     return 0
 
 

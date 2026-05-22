@@ -213,12 +213,17 @@ def _route_destination(route: dict) -> str:
     )
 
 
-def _collapse_routes(routes: list[dict]) -> list[RouteRow]:
+def _route_target_label(target: str, target_labels: dict[str, str]) -> str:
+    return target_labels.get(target, target)
+
+
+def _collapse_routes(routes: list[dict], target_labels: dict[str, str] | None = None) -> list[RouteRow]:
+    target_labels = target_labels or {}
     grouped: dict[tuple[str, str], list[str]] = defaultdict(list)
     passthrough: list[RouteRow] = []
     for route in routes:
         destination = _route_destination(route)
-        target = _route_target(route)
+        target = _route_target_label(_route_target(route), target_labels)
         note = route.get("State", "")
         if note and note != "active":
             passthrough.append(RouteRow(destination, target, note))
@@ -283,6 +288,7 @@ def _collect_route_tables(
     route_tables: list[dict],
     subnet_name_by_id: dict[str, str],
     vpc_id: str,
+    target_labels: dict[str, str],
 ) -> list[RouteTable]:
     tables: list[RouteTable] = []
     for route_table in route_tables:
@@ -302,7 +308,7 @@ def _collect_route_tables(
                 label,
                 "VPC Route Table",
                 sorted(associations),
-                _collapse_routes(route_table.get("Routes", [])),
+                _collapse_routes(route_table.get("Routes", []), target_labels),
             )
         )
     return tables
@@ -312,8 +318,10 @@ def _collect_tgw_route_tables(
     profile: str | None,
     region: str,
     transit_gateway_ids: set[str],
+    selected_attachment_ids: set[str],
+    target_labels: dict[str, str],
 ) -> list[RouteTable]:
-    if not transit_gateway_ids:
+    if not transit_gateway_ids or not selected_attachment_ids:
         return []
 
     route_tables = _run_best_effort(profile, region, "ec2", "describe-transit-gateway-route-tables").get(
@@ -340,17 +348,23 @@ def _collect_tgw_route_tables(
             ["--transit-gateway-route-table-id", table_id, "--filters", "Name=state,Values=active"],
         )
         associations = []
+        associated_with_selected_vpc = False
         for association in associations_resp.get("Associations", []):
             resource_id = association.get("ResourceId")
+            attachment_id = association.get("TransitGatewayAttachmentId")
+            if attachment_id in selected_attachment_ids:
+                associated_with_selected_vpc = True
             if resource_id:
-                associations.append(resource_id)
+                associations.append(_route_target_label(resource_id, target_labels))
+        if not associated_with_selected_vpc:
+            continue
         rows = []
         for route in routes_resp.get("Routes", []):
             attachments = []
             for attachment in route.get("TransitGatewayAttachments", []):
                 attachment_id = attachment.get("ResourceId") or attachment.get("TransitGatewayAttachmentId")
                 if attachment_id:
-                    attachments.append(attachment_id)
+                    attachments.append(_route_target_label(attachment_id, target_labels))
             rows.append(
                 RouteRow(
                     route.get("DestinationCidrBlock", "unknown"),
@@ -361,13 +375,49 @@ def _collect_tgw_route_tables(
         tables.append(
             RouteTable(
                 table_id,
-                table.get("Tags", [{}])[0].get("Value") or table_id,
+                _tag_name(table) or table_id,
                 "Transit Gateway Route Table",
                 sorted(associations),
                 rows[:20],
             )
         )
     return tables
+
+
+def _add_name_labels(labels: dict[str, str], resources: list[dict], id_field: str) -> None:
+    for resource in resources:
+        resource_id = resource.get(id_field)
+        name = _tag_name(resource)
+        if resource_id and name:
+            labels[resource_id] = name
+
+
+def _build_route_target_labels(
+    vpcs: list[dict],
+    internet_gateways: list[dict],
+    nat_gateways: list[dict],
+    instances: list[dict],
+    vpn_gateways: list[dict],
+    vpn_connections: list[dict],
+    vpc_peering_connections: list[dict],
+    vpc_endpoints: list[dict],
+    transit_gateways: list[dict],
+    tgw_vpc_attachments: list[dict],
+    tgw_peering_attachments: list[dict],
+) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    _add_name_labels(labels, vpcs, "VpcId")
+    _add_name_labels(labels, internet_gateways, "InternetGatewayId")
+    _add_name_labels(labels, nat_gateways, "NatGatewayId")
+    _add_name_labels(labels, instances, "InstanceId")
+    _add_name_labels(labels, vpn_gateways, "VpnGatewayId")
+    _add_name_labels(labels, vpn_connections, "VpnConnectionId")
+    _add_name_labels(labels, vpc_peering_connections, "VpcPeeringConnectionId")
+    _add_name_labels(labels, vpc_endpoints, "VpcEndpointId")
+    _add_name_labels(labels, transit_gateways, "TransitGatewayId")
+    _add_name_labels(labels, tgw_vpc_attachments, "TransitGatewayAttachmentId")
+    _add_name_labels(labels, tgw_peering_attachments, "TransitGatewayAttachmentId")
+    return labels
 
 
 def _collect_waf_edges(
@@ -521,6 +571,7 @@ def discover_account(
         resources.append(Resource("igw", "internet_gateway", "Internet Gateway", sorted(attached_igws), placement="ingress"))
 
     transit_gateway_ids: set[str] = set()
+    selected_tgw_attachment_ids: set[str] = set()
     for attachment in tgw_vpc_attachments:
         if attachment.get("VpcId") != vpc_id or attachment.get("State") not in {"available", "pending"}:
             continue
@@ -529,6 +580,8 @@ def discover_account(
         if not transit_gateway_id:
             continue
         transit_gateway_ids.add(transit_gateway_id)
+        if attachment_id:
+            selected_tgw_attachment_ids.add(attachment_id)
         tgw_label = transit_gateway_labels.get(transit_gateway_id)
         if not tgw_label:
             continue
@@ -789,8 +842,29 @@ def discover_account(
 
     route_table_models: list[RouteTable] = []
     if show_routes:
-        route_table_models = _collect_route_tables(route_tables, subnet_name_by_id, vpc_id)
-        route_table_models.extend(_collect_tgw_route_tables(resolved_profile, region, transit_gateway_ids))
+        route_target_labels = _build_route_target_labels(
+            vpcs,
+            internet_gateways,
+            nat_gateways,
+            instances,
+            vpn_gateways,
+            vpn_connections,
+            vpc_peering_connections,
+            vpc_endpoints,
+            transit_gateways,
+            tgw_vpc_attachments,
+            tgw_peering_attachments,
+        )
+        route_table_models = _collect_route_tables(route_tables, subnet_name_by_id, vpc_id, route_target_labels)
+        route_table_models.extend(
+            _collect_tgw_route_tables(
+                resolved_profile,
+                region,
+                transit_gateway_ids,
+                selected_tgw_attachment_ids,
+                route_target_labels,
+            )
+        )
 
     service_targets = internal_service_targets + endpoint_targets
     for peering in [resource for resource in resources if resource.kind == "vpc_peering"]:
