@@ -4,7 +4,7 @@ from pathlib import Path
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from aws_diagram.layout_engine import DiagramLayout, GroupLayout, NodeLayout, Rect, build_layout
-from aws_diagram.models import DiagramModel
+from aws_diagram.models import DiagramModel, SecurityGroupRule, SecurityGroupSummary
 from aws_diagram.route_engine import build_routes
 
 
@@ -323,15 +323,94 @@ def _draw_route_tables(builder: _Builder, layout: DiagramLayout) -> None:
         _add_text_cell(builder, table.label, box.x + 12, box.y + 6, box.width - 24, 18, size=15, bold=True, color="#111827")
         _add_text_cell(builder, table.scope, box.x + 12, box.y + 34, box.width - 24, 18, size=12)
         header_y = box.y + 78
-        _add_text_cell(builder, "Destination", box.x + 12, header_y, 150, 18, size=12)
-        _add_text_cell(builder, "Target", box.x + 200, header_y, 120, 18, size=12)
-        _add_text_cell(builder, "Note", box.x + 340, header_y, 80, 18, size=12)
+        destination_x = box.x + 12
+        target_x = box.x + 175
+        note_x = box.x + 360
+        _add_text_cell(builder, "Destination", destination_x, header_y, 150, 18, size=12)
+        _add_text_cell(builder, "Target", target_x, header_y, 165, 18, size=12)
+        _add_text_cell(builder, "Note", note_x, header_y, 70, 18, size=12)
         row_y = header_y + 18
         for row in table.rows[:18]:
-            _add_text_cell(builder, row.destination, box.x + 12, row_y, 170, 18, size=11, color="#4b5563")
-            _add_text_cell(builder, row.target, box.x + 200, row_y, 130, 18, size=11, color="#4b5563")
-            _add_text_cell(builder, row.note, box.x + 340, row_y, 110, 18, size=11, color="#4b5563")
+            _add_text_cell(builder, row.destination, destination_x, row_y, 170, 18, size=11, color="#4b5563")
+            _add_text_cell(builder, row.target, target_x, row_y, 165, 22, size=11, color="#4b5563")
+            _add_text_cell(builder, row.note, note_x, row_y, 70, 18, size=11, color="#4b5563")
             row_y += 24
+
+
+def _source_lines(sources: list[str], width: int = 72) -> list[str]:
+    lines: list[str] = []
+    current = ""
+    for source in sources:
+        candidate = source if not current else f"{current}, {source}"
+        if current and len(candidate) > width:
+            lines.append(current)
+            current = source
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+def _rule_height(rule: SecurityGroupRule) -> int:
+    return max(22, len(_source_lines(rule.sources)) * 14 + 8)
+
+
+def _security_group_card_height(group: SecurityGroupSummary) -> int:
+    return max(128, 78 + sum(_rule_height(rule) for rule in group.inbound + group.outbound))
+
+
+def _draw_sg_rule(builder: _Builder, box: Rect, y: int, rule: SecurityGroupRule) -> None:
+    fill = "#ecfdf5" if rule.direction == "inbound" else "#eff6ff"
+    source_lines = _source_lines(rule.sources)
+    height = _rule_height(rule)
+    builder.vertex("", f"rounded=1;arcSize=3;whiteSpace=wrap;html=1;strokeColor=none;fillColor={fill};", Rect(box.x + 10, y - 13, box.width - 20, height - 4))
+    _add_text_cell(builder, "IN" if rule.direction == "inbound" else "OUT", box.x + 16, y - 13, 36, 18, size=11, color="#4b5563")
+    _add_text_cell(builder, rule.protocol, box.x + 58, y - 13, 42, 18, size=11, color="#4b5563")
+    _add_text_cell(builder, rule.ports, box.x + 105, y - 13, 58, 18, size=11, color="#4b5563")
+    _add_text_cell(builder, "<br>".join(source_lines), box.x + 172, y - 13, box.width - 190, height - 4, size=11, color="#4b5563")
+
+
+def _draw_security_groups(builder: _Builder, model: DiagramModel, layout: DiagramLayout) -> None:
+    if not model.security_groups:
+        return
+
+    start_y = layout.outer.bottom + 92
+    card_width = max(420, (layout.canvas_width - 140 - 28) // 2)
+    left_x = 70
+    right_x = left_x + card_width + 28
+    column_y = [start_y + 54, start_y + 54]
+    _add_text_cell(builder, "Security Groups", left_x, start_y - 24, 300, 30, size=22, bold=True, color="#111827")
+    _add_text_cell(
+        builder,
+        "Rules for security groups attached to resources shown in this diagram",
+        left_x,
+        start_y + 6,
+        600,
+        22,
+        size=12,
+    )
+    for index, group in enumerate(model.security_groups):
+        column = index % 2
+        x = left_x if column == 0 else right_x
+        height = _security_group_card_height(group)
+        box = Rect(x, column_y[column], card_width, height)
+        builder.vertex("", _box_style(stroke="#111827", fill="#ffffff", width=1.3), box)
+        builder.vertex("", "rounded=0;whiteSpace=wrap;html=1;strokeColor=#d1d5db;fillColor=#eef2f7;", Rect(box.x, box.y, box.width, 30))
+        _add_text_cell(builder, f"{group.name} ({group.id})", box.x + 12, box.y + 5, box.width - 24, 20, size=15, bold=True, color="#111827")
+        attached = ", ".join(group.attached_to[:3])
+        if len(group.attached_to) > 3:
+            attached += f" +{len(group.attached_to) - 3}"
+        _add_text_cell(builder, f"Attached: {attached}", box.x + 12, box.y + 36, box.width - 24, 18, size=12)
+        _add_text_cell(builder, "Dir", box.x + 16, box.y + 58, 36, 18, size=11)
+        _add_text_cell(builder, "Proto", box.x + 58, box.y + 58, 42, 18, size=11)
+        _add_text_cell(builder, "Ports", box.x + 105, box.y + 58, 58, 18, size=11)
+        _add_text_cell(builder, "Sources / CIDRs", box.x + 172, box.y + 58, box.width - 190, 18, size=11)
+        y = box.y + 92
+        for rule in group.inbound + group.outbound:
+            _draw_sg_rule(builder, box, y, rule)
+            y += _rule_height(rule)
+        column_y[column] += height + 18
 
 
 def render_drawio(model: DiagramModel) -> str:
@@ -342,6 +421,7 @@ def render_drawio(model: DiagramModel) -> str:
     _draw_groups(builder, layout)
     anchor_cells = _draw_nodes(builder, layout)
     _draw_route_tables(builder, layout)
+    _draw_security_groups(builder, model, layout)
 
     for route in build_routes(model, layout):
         source = anchor_cells.get(route.source_id)

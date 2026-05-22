@@ -7,7 +7,17 @@ import subprocess
 from collections import defaultdict
 from pathlib import Path
 
-from aws_diagram.models import DiagramModel, Edge, Group, Resource, RouteRow, RouteTable, Subnet
+from aws_diagram.models import (
+    DiagramModel,
+    Edge,
+    Group,
+    Resource,
+    RouteRow,
+    RouteTable,
+    SecurityGroupRule,
+    SecurityGroupSummary,
+    Subnet,
+)
 
 
 ACCOUNT_RE = re.compile(r":(\d{12}):")
@@ -219,25 +229,13 @@ def _route_target_label(target: str, target_labels: dict[str, str]) -> str:
 
 def _collapse_routes(routes: list[dict], target_labels: dict[str, str] | None = None) -> list[RouteRow]:
     target_labels = target_labels or {}
-    grouped: dict[tuple[str, str], list[str]] = defaultdict(list)
-    passthrough: list[RouteRow] = []
+    rows: list[RouteRow] = []
     for route in routes:
         destination = _route_destination(route)
         target = _route_target_label(_route_target(route), target_labels)
         note = route.get("State", "")
-        if note and note != "active":
-            passthrough.append(RouteRow(destination, target, note))
-            continue
-        grouped[(target, note)].append(destination)
-
-    collapsed: list[RouteRow] = []
-    for (target, note), destinations in sorted(grouped.items()):
-        if len(destinations) > 6:
-            collapsed.append(RouteRow(f"{len(destinations)} destinations", target, "collapsed"))
-            continue
-        for destination in sorted(destinations):
-            collapsed.append(RouteRow(destination, target, note))
-    return collapsed + passthrough
+        rows.append(RouteRow(destination, target, note))
+    return sorted(rows, key=lambda row: (row.target, row.destination, row.note))
 
 
 def _sanitize_group_id(prefix: str, label: str) -> str:
@@ -420,6 +418,87 @@ def _build_route_target_labels(
     return labels
 
 
+def _rule_ports(permission: dict) -> str:
+    protocol = permission.get("IpProtocol", "all")
+    if protocol == "-1":
+        return "all"
+    from_port = permission.get("FromPort")
+    to_port = permission.get("ToPort")
+    if from_port is None or to_port is None:
+        return "all"
+    if from_port == to_port:
+        return str(from_port)
+    return f"{from_port}-{to_port}"
+
+
+def _rule_protocol(permission: dict) -> str:
+    protocol = permission.get("IpProtocol", "all")
+    return "all" if protocol == "-1" else protocol
+
+
+def _rule_sources(permission: dict) -> list[str]:
+    sources: list[str] = []
+    for item in permission.get("IpRanges", []) or []:
+        if item.get("CidrIp"):
+            sources.append(item["CidrIp"])
+    for item in permission.get("Ipv6Ranges", []) or []:
+        if item.get("CidrIpv6"):
+            sources.append(item["CidrIpv6"])
+    for item in permission.get("PrefixListIds", []) or []:
+        if item.get("PrefixListId"):
+            sources.append(item["PrefixListId"])
+    for item in permission.get("UserIdGroupPairs", []) or []:
+        if item.get("GroupId"):
+            sources.append(item["GroupId"])
+    return sorted(set(sources)) or ["self/unknown"]
+
+
+def _security_group_rules(direction: str, permissions: list[dict]) -> list[SecurityGroupRule]:
+    rows = []
+    for permission in permissions:
+        rows.append(
+            SecurityGroupRule(
+                direction=direction,
+                protocol=_rule_protocol(permission),
+                ports=_rule_ports(permission),
+                sources=_rule_sources(permission),
+            )
+        )
+    return rows
+
+
+def _collect_security_group_summaries(
+    security_groups: list[dict],
+    resources: list[Resource],
+) -> list[SecurityGroupSummary]:
+    attachments: dict[str, list[str]] = defaultdict(list)
+    for resource in resources:
+        for group_id in resource.security_group_ids:
+            attachments[group_id].append(resource.label)
+
+    if not attachments:
+        return []
+
+    security_group_by_id = {group["GroupId"]: group for group in security_groups if group.get("GroupId")}
+    summaries: list[SecurityGroupSummary] = []
+    for group_id in sorted(attachments):
+        group = security_group_by_id.get(group_id)
+        if not group:
+            summaries.append(SecurityGroupSummary(group_id, group_id, "", sorted(set(attachments[group_id]))))
+            continue
+        summaries.append(
+            SecurityGroupSummary(
+                id=group_id,
+                name=_tag_name(group) or group.get("GroupName", group_id),
+                description=group.get("Description", ""),
+                attached_to=sorted(set(attachments[group_id])),
+                inbound=_security_group_rules("inbound", group.get("IpPermissions", []) or []),
+                outbound=_security_group_rules("outbound", group.get("IpPermissionsEgress", []) or []),
+            )
+        )
+    return summaries
+
+
 def _collect_waf_edges(
     profile: str | None,
     region: str,
@@ -456,6 +535,7 @@ def discover_account(
     vpc: str,
     profile: str | None = None,
     show_routes: bool = False,
+    show_security_groups: bool = False,
 ) -> DiagramModel:
     resolved_profile = resolve_profile(account, profile)
     if profile is None and resolved_profile is None:
@@ -703,6 +783,9 @@ def discover_account(
                 subnet_id=instance["SubnetId"],
                 group=_sanitize_group_id(group_kind, group_label) if group_label else None,
                 public=bool(instance.get("PublicIpAddress")),
+                security_group_ids=[
+                    group["GroupId"] for group in instance.get("SecurityGroups", []) or [] if group.get("GroupId")
+                ],
             )
         )
         if group_label:
@@ -725,6 +808,7 @@ def discover_account(
                 placement=placement,
                 public=placement == "ingress",
                 internal=placement == "service",
+                security_group_ids=load_balancer.get("SecurityGroups", []) or [],
             )
         )
         if placement == "service":
@@ -813,6 +897,7 @@ def discover_account(
                     az=subnet["AvailabilityZone"],
                     subnet_id=subnet_id,
                     group=group_id,
+                    security_group_ids=security_group_ids,
                 )
             )
             if group_id:
@@ -888,6 +973,8 @@ def discover_account(
     if show_routes and not route_table_models:
         warnings.append("No route tables were discovered for this VPC scope.")
 
+    security_group_models = _collect_security_group_summaries(security_groups, resources) if show_security_groups else []
+
     return DiagramModel(
         title=f"AWS Architecture Diagram {vpc_name}",
         region=region,
@@ -900,5 +987,6 @@ def discover_account(
         groups=list(groups.values()),
         edges=edges,
         route_tables=route_table_models,
+        security_groups=security_group_models,
         warnings=warnings,
     )

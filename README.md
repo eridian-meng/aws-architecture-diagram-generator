@@ -92,6 +92,20 @@ Route tables are hidden by default. Include them only when needed:
 python3 -m aws_diagram.cli --account <acct> --region <region> --vpc <vpc-id-or-name> --show-routes --output diagrams/<name>.svg
 ```
 
+Security groups are hidden by default. Include an appendix with security groups attached to drawn resources, plus inbound and outbound rules:
+
+```bash
+draw --account <acct> --region <region> --vpc <vpc-id-or-name> --show-security-groups --output diagrams/<name>.svg
+```
+
+The security group appendix includes only security groups attached to resources shown in the diagram, such as load balancers, EC2 instances, and RDS instances. Rules are summarized by direction, protocol, port range, and source CIDRs/security group references.
+
+Use `--full` to include all optional sections:
+
+```bash
+draw --account <acct> --region <region> --vpc <vpc-id-or-name> --full --output diagrams/<name>.svg
+```
+
 ## Global `draw` Command
 
 Install a global wrapper for this checkout with:

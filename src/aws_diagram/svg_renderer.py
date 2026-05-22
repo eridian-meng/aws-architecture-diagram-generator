@@ -5,7 +5,7 @@ from pathlib import Path
 
 from aws_diagram.icon_catalog import icon_data_uri
 from aws_diagram.layout_engine import DiagramLayout, GroupLayout, NodeLayout, Point, Rect, RouteTableLayout, build_layout
-from aws_diagram.models import DiagramModel
+from aws_diagram.models import DiagramModel, SecurityGroupRule, SecurityGroupSummary
 from aws_diagram.route_engine import build_routes, route_points
 
 
@@ -50,6 +50,11 @@ def _header(layout: DiagramLayout) -> list[str]:
         "      .service-card { fill: #ffffff; stroke: #111827; stroke-width: 1.6; }",
         "      .table { fill: #ffffff; stroke: #111827; stroke-width: 1.4; }",
         "      .table-head { fill: #f3f4f6; stroke: #d1d5db; stroke-width: 1; }",
+        "      .appendix-title { font: 700 22px Arial, sans-serif; fill: #111827; }",
+        "      .sg-card { fill: #ffffff; stroke: #111827; stroke-width: 1.3; }",
+        "      .sg-head { fill: #eef2f7; stroke: #d1d5db; stroke-width: 1; }",
+        "      .sg-rule-in { fill: #ecfdf5; stroke: none; }",
+        "      .sg-rule-out { fill: #eff6ff; stroke: none; }",
         "      .flow { fill: none; stroke: #374151; stroke-width: 2.1; stroke-linecap: round; stroke-linejoin: round; }",
         "      .user-box { fill: #ffffff; stroke: #374151; stroke-width: 1.8; }",
         "      .lock-fill { fill: none; stroke: #ffffff; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }",
@@ -303,15 +308,94 @@ def _draw_route_tables(layout: DiagramLayout) -> list[str]:
                 assoc += f" +{len(table.associations) - 4}"
             lines.append(_text(box.x + 12, box.y + 62, f"Assoc: {assoc}", "tiny"))
         header_y = box.y + 84
-        lines.append(_text(box.x + 12, header_y, "Destination", "small"))
-        lines.append(_text(box.x + 210, header_y, "Target", "small"))
-        lines.append(_text(box.x + 350, header_y, "Note", "small"))
+        destination_x = box.x + 12
+        target_x = box.x + 175
+        note_x = box.x + 360
+        lines.append(_text(destination_x, header_y, "Destination", "small"))
+        lines.append(_text(target_x, header_y, "Target", "small"))
+        lines.append(_text(note_x, header_y, "Note", "small"))
         row_y = header_y + 18
         for row in table.rows[:18]:
-            lines.append(_text(box.x + 12, row_y, row.destination, "tiny"))
-            lines.append(_text(box.x + 210, row_y, row.target, "tiny"))
-            lines.append(_text(box.x + 350, row_y, row.note, "tiny"))
+            lines.append(_text(destination_x, row_y, row.destination, "tiny"))
+            for index, line in enumerate(_split_line(row.target, 26)):
+                lines.append(_text(target_x, row_y + index * 13, line, "tiny"))
+            lines.append(_text(note_x, row_y, row.note, "tiny"))
             row_y += 24
+    return lines
+
+
+def _source_lines(sources: list[str], width: int = 72) -> list[str]:
+    lines: list[str] = []
+    current = ""
+    for source in sources:
+        candidate = source if not current else f"{current}, {source}"
+        if current and len(candidate) > width:
+            lines.append(current)
+            current = source
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+def _rule_height(rule: SecurityGroupRule) -> int:
+    return max(22, len(_source_lines(rule.sources)) * 14 + 8)
+
+
+def _draw_sg_rule(box: Rect, y: int, rule: SecurityGroupRule) -> list[str]:
+    klass = "sg-rule-in" if rule.direction == "inbound" else "sg-rule-out"
+    source_lines = _source_lines(rule.sources)
+    height = _rule_height(rule)
+    lines = [f'  <rect x="{box.x + 10}" y="{y - 13}" width="{box.width - 20}" height="{height - 4}" rx="3" ry="3" class="{klass}"/>']
+    lines.append(_text(box.x + 16, y, "IN" if rule.direction == "inbound" else "OUT", "tiny"))
+    lines.append(_text(box.x + 58, y, rule.protocol, "tiny"))
+    lines.append(_text(box.x + 105, y, rule.ports, "tiny"))
+    for index, line in enumerate(source_lines):
+        lines.append(_text(box.x + 172, y + index * 14, line, "tiny"))
+    return lines
+
+
+def _security_group_card_height(group: SecurityGroupSummary) -> int:
+    return max(128, 78 + sum(_rule_height(rule) for rule in group.inbound + group.outbound))
+
+
+def _draw_security_groups(model: DiagramModel, layout: DiagramLayout) -> list[str]:
+    if not model.security_groups:
+        return []
+
+    start_y = layout.outer.bottom + 92
+    card_width = max(420, (layout.canvas_width - 140 - 28) // 2)
+    left_x = 70
+    right_x = left_x + card_width + 28
+    column_y = [start_y + 54, start_y + 54]
+    lines = [
+        _text(left_x, start_y, "Security Groups", "appendix-title"),
+        _text(left_x, start_y + 24, "Rules for security groups attached to resources shown in this diagram", "small"),
+    ]
+
+    for index, group in enumerate(model.security_groups):
+        column = index % 2
+        x = left_x if column == 0 else right_x
+        height = _security_group_card_height(group)
+        box = Rect(x, column_y[column], card_width, height)
+        lines.append(_rect(box, "sg-card", 8, 8))
+        lines.append(_rect(Rect(box.x, box.y, box.width, 30), "sg-head", 8, 8))
+        lines.append(_text(box.x + 12, box.y + 20, f"{group.name} ({group.id})", "label"))
+        attached = ", ".join(group.attached_to[:3])
+        if len(group.attached_to) > 3:
+            attached += f" +{len(group.attached_to) - 3}"
+        lines.append(_text(box.x + 12, box.y + 48, f"Attached: {attached}", "small"))
+        lines.append(_text(box.x + 16, box.y + 70, "Dir", "tiny"))
+        lines.append(_text(box.x + 58, box.y + 70, "Proto", "tiny"))
+        lines.append(_text(box.x + 105, box.y + 70, "Ports", "tiny"))
+        lines.append(_text(box.x + 172, box.y + 70, "Sources / CIDRs", "tiny"))
+        y = box.y + 92
+        rules = group.inbound + group.outbound
+        for rule in rules:
+            lines.extend(_draw_sg_rule(box, y, rule))
+            y += _rule_height(rule)
+        column_y[column] += height + 18
     return lines
 
 
@@ -325,6 +409,7 @@ def render_svg(model: DiagramModel) -> str:
         lines.append(f'  <path d="{_path(route_points(route, layout))}" class="flow" marker-end="url(#arrow)"/>')
     lines.extend(_draw_nodes(layout))
     lines.extend(_draw_route_tables(layout))
+    lines.extend(_draw_security_groups(model, layout))
     lines.append("</svg>")
     return "\n".join(lines)
 

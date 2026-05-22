@@ -25,6 +25,7 @@ class Resource:
     placement: str = "subnet"
     public: bool = False
     internal: bool = False
+    security_group_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -59,6 +60,25 @@ class RouteTable:
 
 
 @dataclass
+class SecurityGroupRule:
+    direction: str
+    protocol: str
+    ports: str
+    sources: list[str] = field(default_factory=list)
+    description: str = ""
+
+
+@dataclass
+class SecurityGroupSummary:
+    id: str
+    name: str
+    description: str
+    attached_to: list[str] = field(default_factory=list)
+    inbound: list[SecurityGroupRule] = field(default_factory=list)
+    outbound: list[SecurityGroupRule] = field(default_factory=list)
+
+
+@dataclass
 class DiagramModel:
     title: str
     region: str
@@ -71,4 +91,5 @@ class DiagramModel:
     groups: list[Group]
     edges: list[Edge]
     route_tables: list[RouteTable] = field(default_factory=list)
+    security_groups: list[SecurityGroupSummary] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)

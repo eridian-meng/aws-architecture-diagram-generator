@@ -27,12 +27,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--region", help="AWS region to discover")
     parser.add_argument("--vpc", help="VPC ID or Name tag to scope live discovery")
     parser.add_argument("--show-routes", action="store_true", help="Include VPC and Transit Gateway route tables")
+    parser.add_argument(
+        "--show-security-groups",
+        action="store_true",
+        help="Append security groups and rules for resources shown in the diagram",
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Include all optional sections: routes and security groups",
+    )
     return parser
 
 
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    show_routes = args.show_routes or args.full
+    show_security_groups = args.show_security_groups or args.full
     output_path = Path(args.output)
     output_is_drawio = output_path.suffix.lower() == ".drawio"
     svg_path = output_path if not output_is_drawio else None
@@ -47,10 +59,11 @@ def main() -> int:
             region=args.region,
             vpc=args.vpc,
             profile=args.profile,
-            show_routes=args.show_routes,
+            show_routes=show_routes,
+            show_security_groups=show_security_groups,
         )
     else:
-        model = build_sample_model(show_routes=args.show_routes)
+        model = build_sample_model(show_routes=show_routes, show_security_groups=show_security_groups)
     if svg_path:
         render_svg_to_file(model, svg_path)
         print(svg_path)

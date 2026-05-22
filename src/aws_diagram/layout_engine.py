@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from aws_diagram.models import DiagramModel, Group, Resource, RouteTable, Subnet
+from aws_diagram.models import DiagramModel, Group, Resource, RouteTable, SecurityGroupRule, SecurityGroupSummary, Subnet
 
 
 TIER_ORDER = ("public", "private", "database")
@@ -159,6 +159,35 @@ def _subnet_content_height(resources: list[Resource], tier: str) -> int:
 
 def _route_table_height(table: RouteTable) -> int:
     return 92 + len(table.rows[:18]) * 24
+
+
+def _rule_source_line_count(rule: SecurityGroupRule, width: int = 72) -> int:
+    lines = 1
+    current = 0
+    for source in rule.sources:
+        source_length = len(source) + (2 if current else 0)
+        if current and current + source_length > width:
+            lines += 1
+            current = len(source)
+        else:
+            current += source_length
+    return lines
+
+
+def _security_group_height(group: SecurityGroupSummary) -> int:
+    rules = group.inbound + group.outbound
+    rule_height = sum(max(22, _rule_source_line_count(rule) * 14 + 8) for rule in rules)
+    return max(128, 78 + rule_height)
+
+
+def _security_group_appendix_height(groups: list[SecurityGroupSummary]) -> int:
+    if not groups:
+        return 0
+    columns = 2
+    column_heights = [0] * columns
+    for index, group in enumerate(groups):
+        column_heights[index % columns] += _security_group_height(group) + 18
+    return 92 + max(column_heights)
 
 
 def _public_lb_caption(resources: list[Resource]) -> str | None:
@@ -424,7 +453,7 @@ def build_layout(model: DiagramModel) -> DiagramLayout:
             text_anchor="middle",
         )
 
-    route_table_width = 470 if model.route_tables else 0
+    route_table_width = 560 if model.route_tables else 0
     route_table_layouts: list[RouteTableLayout] = []
     route_table_x = vpc.right + 36
     route_table_y = vpc.y + 26
@@ -440,7 +469,7 @@ def build_layout(model: DiagramModel) -> DiagramLayout:
     outer_bottom = max(vpc.bottom + 18, next_table_y + 20 if route_table_layouts else 0)
     outer = Rect(outer_x, outer_y, body_width, outer_bottom - outer_y)
     canvas_width = outer.right + 70
-    canvas_height = outer.bottom + 92
+    canvas_height = outer.bottom + 92 + _security_group_appendix_height(model.security_groups)
 
     return DiagramLayout(
         canvas_width=canvas_width,

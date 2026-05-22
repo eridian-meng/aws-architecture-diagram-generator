@@ -1,9 +1,19 @@
 from __future__ import annotations
 
-from aws_diagram.models import DiagramModel, Edge, Group, Resource, RouteRow, RouteTable, Subnet
+from aws_diagram.models import (
+    DiagramModel,
+    Edge,
+    Group,
+    Resource,
+    RouteRow,
+    RouteTable,
+    SecurityGroupRule,
+    SecurityGroupSummary,
+    Subnet,
+)
 
 
-def build_sample_model(show_routes: bool = False) -> DiagramModel:
+def build_sample_model(show_routes: bool = False, show_security_groups: bool = False) -> DiagramModel:
     subnets = [
         Subnet("subnet-public-a", "Example-Public-us-east-1a", "10.0.0.0/27", "us-east-1a", "public", "rtb-public-a"),
         Subnet("subnet-private-a", "Example-Private-us-east-1a", "10.0.0.64/27", "us-east-1a", "private", "rtb-private-a"),
@@ -18,21 +28,21 @@ def build_sample_model(show_routes: bool = False) -> DiagramModel:
         Resource("tgw-peer", "tgw_peering", "Peering", ["tgw-peer-example"], placement="left"),
         Resource("igw", "internet_gateway", "Internet Gateway", ["igw-example"], placement="ingress"),
         Resource("waf", "waf", "Example-Web-ACL", ["web-acl-example"], placement="ingress"),
-        Resource("public-elb", "alb", "Public-App-ALB", [], placement="ingress", public=True),
+        Resource("public-elb", "alb", "Public-App-ALB", [], placement="ingress", public=True, security_group_ids=["sg-alb"]),
         Resource("test-lb", "alb", "Public-Web-ALB", [], placement="ingress", public=True),
         Resource("temp-lb", "alb", "Partner-Access-ALB", [], placement="ingress", public=True),
         Resource("mirror-elb", "alb", "Shared-Services-ALB", [], placement="ingress", public=True),
         Resource("sftp-elb", "nlb", "SFTP-NLB", ["198.51.100.20"], placement="ingress", public=True),
         Resource("nat-a", "nat_gateway", "NAT-us-east-1a", ["198.51.100.10", "10.0.0.10"], az="us-east-1a", subnet_id="subnet-public-a"),
         Resource("nat-b", "nat_gateway", "NAT-us-east-1b", ["198.51.100.11", "10.0.0.42"], az="us-east-1b", subnet_id="subnet-public-b"),
-        Resource("app-a1", "ec2_instance", "App-Server-A1", ["10.0.0.73"], az="us-east-1a", subnet_id="subnet-private-a", group="sg-app-a"),
+        Resource("app-a1", "ec2_instance", "App-Server-A1", ["10.0.0.73"], az="us-east-1a", subnet_id="subnet-private-a", group="sg-app-a", security_group_ids=["sg-app"]),
         Resource("web-a1", "ec2_instance", "Web-Server-A1", ["10.0.0.74"], az="us-east-1a", subnet_id="subnet-private-a", group="sg-app-a"),
         Resource("partner-a1", "ec2_instance", "Partner-Worker-A1", ["10.0.0.75"], az="us-east-1a", subnet_id="subnet-private-a", group="sg-app-a"),
         Resource("ops-a1", "ec2_instance", "Ops-Node-A1", ["10.0.0.76"], az="us-east-1a", subnet_id="subnet-private-a", group="sg-app-a"),
         Resource("shared-b1", "ec2_instance", "Shared-Node-B1", ["10.0.0.101"], az="us-east-1b", subnet_id="subnet-private-b", group="sg-app-b"),
         Resource("shared-b2", "ec2_instance", "Shared-Node-B2", ["10.0.0.102"], az="us-east-1b", subnet_id="subnet-private-b", group="sg-app-b"),
         Resource("api-b1", "ec2_instance", "API-Server-B1", ["10.0.0.103"], az="us-east-1b", subnet_id="subnet-private-b", group="sg-app-b"),
-        Resource("db-a", "ec2_instance", "Database-Node-A", ["10.0.0.140"], az="us-east-1a", subnet_id="subnet-db-a", group="sg-db-a"),
+        Resource("db-a", "ec2_instance", "Database-Node-A", ["10.0.0.140"], az="us-east-1a", subnet_id="subnet-db-a", group="sg-db-a", security_group_ids=["sg-db"]),
         Resource("db-b", "ec2_instance", "Database-Node-B", ["10.0.0.141"], az="us-east-1b", subnet_id="subnet-db-b", group="sg-db-b"),
     ]
 
@@ -84,6 +94,33 @@ def build_sample_model(show_routes: bool = False) -> DiagramModel:
         ),
     ]
 
+    security_groups = [
+        SecurityGroupSummary(
+            "sg-alb",
+            "example-public-alb-sg",
+            "Public web ingress",
+            ["Public-App-ALB"],
+            [SecurityGroupRule("inbound", "tcp", "443", ["203.0.113.0/24", "198.51.100.10/32"])],
+            [SecurityGroupRule("outbound", "tcp", "8080", ["sg-app"])],
+        ),
+        SecurityGroupSummary(
+            "sg-app",
+            "example-app-sg",
+            "Application tier",
+            ["App-Server-A1"],
+            [SecurityGroupRule("inbound", "tcp", "8080", ["sg-alb"]), SecurityGroupRule("inbound", "tcp", "22", ["10.0.0.0/24"])],
+            [SecurityGroupRule("outbound", "tcp", "5432", ["sg-db"]), SecurityGroupRule("outbound", "tcp", "443", ["0.0.0.0/0"])],
+        ),
+        SecurityGroupSummary(
+            "sg-db",
+            "example-db-sg",
+            "Database tier",
+            ["Database-Node-A"],
+            [SecurityGroupRule("inbound", "tcp", "5432", ["sg-app"])],
+            [],
+        ),
+    ]
+
     return DiagramModel(
         title="Example AWS",
         region="us-east-1",
@@ -96,4 +133,5 @@ def build_sample_model(show_routes: bool = False) -> DiagramModel:
         groups=groups,
         edges=edges,
         route_tables=route_tables if show_routes else [],
+        security_groups=security_groups if show_security_groups else [],
     )
