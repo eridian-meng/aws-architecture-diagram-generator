@@ -157,6 +157,24 @@ def _subnet_content_height(resources: list[Resource], tier: str) -> int:
     return max(minimum, height)
 
 
+def _subnets_for_tier_az(subnets: list[Subnet], tier: str, az: str) -> list[Subnet]:
+    return sorted(
+        [subnet for subnet in subnets if subnet.tier == tier and subnet.az == az],
+        key=lambda subnet: (subnet.name.lower(), subnet.cidr, subnet.id),
+    )
+
+
+def _subnet_stack_height(
+    subnets: list[Subnet],
+    resources_by_subnet: dict[str, list[Resource]],
+    tier: str,
+) -> int:
+    if not subnets:
+        return 0
+    heights = [_subnet_content_height(resources_by_subnet.get(subnet.id, []), tier) for subnet in subnets]
+    return sum(heights) + max(0, len(heights) - 1) * 18
+
+
 def _route_table_height(table: RouteTable) -> int:
     return 92 + len(table.rows[:18]) * 24
 
@@ -238,7 +256,10 @@ def build_layout(model: DiagramModel) -> DiagramLayout:
             content_height_by_tier[tier] = 0
             outer_height_by_tier[tier] = 0
             continue
-        content_height = max(_subnet_content_height(resources_by_subnet.get(subnet.id, []), tier) for subnet in tier_subnets)
+        content_height = max(
+            _subnet_stack_height(_subnets_for_tier_az(model.subnets, tier, az), resources_by_subnet, tier)
+            for az in model.azs
+        )
         content_height_by_tier[tier] = content_height
         if tier == "public":
             outer_height_by_tier[tier] = max(320, content_height + 170)
@@ -318,19 +339,27 @@ def build_layout(model: DiagramModel) -> DiagramLayout:
     for az in model.azs:
         az_x = az_x_lookup[az]
         for tier, y in (("public", public_y), ("private", private_y), ("database", database_y)):
-            subnet = next((item for item in model.subnets if item.az == az and item.tier == tier), None)
-            if not subnet:
+            tier_subnets = _subnets_for_tier_az(model.subnets, tier, az)
+            if not tier_subnets:
                 continue
-            box = Rect(az_x, y, subnet_width, outer_height_by_tier[tier])
-            subnet_layouts[subnet.id] = SubnetLayout(
-                subnet=subnet,
-                box=box,
-                header_color=HEADER_COLOR[tier],
-                title_x=box.x + 34,
-                title_y=box.y + 18,
-                cidr_x=box.center_x,
-                cidr_y=box.bottom - 12,
-            )
+            subnet_y = y
+            for subnet in tier_subnets:
+                subnet_height = (
+                    outer_height_by_tier[tier]
+                    if len(tier_subnets) == 1
+                    else _subnet_content_height(resources_by_subnet.get(subnet.id, []), tier)
+                )
+                box = Rect(az_x, subnet_y, subnet_width, subnet_height)
+                subnet_layouts[subnet.id] = SubnetLayout(
+                    subnet=subnet,
+                    box=box,
+                    header_color=HEADER_COLOR[tier],
+                    title_x=box.x + 34,
+                    title_y=box.y + 18,
+                    cidr_x=box.center_x,
+                    cidr_y=box.bottom - 12,
+                )
+                subnet_y += subnet_height + 18
 
     for subnet in model.subnets:
         layout = subnet_layouts[subnet.id]
