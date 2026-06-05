@@ -14,17 +14,19 @@ class Route:
     exit_side: str
     entry_side: str
     waypoints: list[Point] = field(default_factory=list)
+    exit_offset: int = 0
+    entry_offset: int = 0
 
 
-def _anchor(node: NodeLayout, side: str) -> Point:
+def _anchor(node: NodeLayout, side: str, offset: int = 0) -> Point:
     anchor_rect = node.icon if node.style in {"icon_label_below", "side_text_icon"} else node.box
     if side == "left":
-        return Point(anchor_rect.x, anchor_rect.center_y)
+        return Point(anchor_rect.x, anchor_rect.center_y + offset)
     if side == "right":
-        return Point(anchor_rect.right, anchor_rect.center_y)
+        return Point(anchor_rect.right, anchor_rect.center_y + offset)
     if side == "top":
-        return Point(anchor_rect.center_x, anchor_rect.y)
-    return Point(anchor_rect.center_x, anchor_rect.bottom)
+        return Point(anchor_rect.center_x + offset, anchor_rect.y)
+    return Point(anchor_rect.center_x + offset, anchor_rect.bottom)
 
 
 def _is_left_target(node: NodeLayout, layout: DiagramLayout) -> bool:
@@ -48,24 +50,48 @@ def _lb_source_order(source: NodeLayout, layout: DiagramLayout) -> int:
     return 0
 
 
-def _lb_target_route(source: NodeLayout, target: NodeLayout, layout: DiagramLayout, route_index: int) -> Route:
+def _target_entry_offset(target_route_index: int) -> int:
+    if target_route_index <= 0:
+        return 0
+    direction = 1 if target_route_index % 2 else -1
+    return direction * ((target_route_index + 1) // 2) * 12
+
+
+def _backend_branch_y(source: NodeLayout, layout: DiagramLayout) -> int:
+    source_order = _lb_source_order(source, layout)
+    branch_base = max(
+        source.icon.bottom + 28,
+        layout.public_lb_group_box.bottom + 22 if layout.public_lb_group_box else source.icon.bottom + 28,
+    )
+    if not layout.service_ids:
+        return branch_base + source_order * 28
+
+    service_top = min(layout.node_layouts[service_id].box.y for service_id in layout.service_ids)
+    max_branch_y = service_top - 28
+    branch_count = max(1, len(layout.public_lb_ids) - 1)
+    spacing = min(18, max(10, (max_branch_y - branch_base) // branch_count))
+    return min(branch_base + source_order * spacing, max_branch_y)
+
+
+def _lb_target_route(source: NodeLayout, target: NodeLayout, layout: DiagramLayout, route_index: int, target_route_index: int) -> Route:
     resource = target.resource
     entry_side = "right" if _is_left_target(target, layout) else "left"
+    entry_offset = _target_entry_offset(target_route_index)
     if not resource or not resource.subnet_id or resource.subnet_id not in layout.subnet_layouts:
         return Route(
             source.id,
             target.id,
             "bottom",
             entry_side,
-            [Point(source.box.center_x, target.box.center_y)],
+            [Point(source.box.center_x, target.box.center_y + entry_offset)],
+            entry_offset=entry_offset,
         )
 
     subnet_box = layout.subnet_layouts[resource.subnet_id].box
     source_order = _lb_source_order(source, layout)
-    lane_offset = 18 + source_order * 16 + route_index * 8
+    lane_offset = 30 + source_order * 20 + route_index * 10
     lane_x = subnet_box.right + lane_offset if entry_side == "right" else subnet_box.x - lane_offset
-    branch_base = max(source.icon.bottom + 28, layout.public_lb_group_box.bottom + 22 if layout.public_lb_group_box else source.icon.bottom + 28)
-    branch_y = branch_base + source_order * 28
+    branch_y = _backend_branch_y(source, layout)
     return Route(
         source.id,
         target.id,
@@ -74,8 +100,9 @@ def _lb_target_route(source: NodeLayout, target: NodeLayout, layout: DiagramLayo
         [
             Point(source.box.center_x, branch_y),
             Point(lane_x, branch_y),
-            Point(lane_x, target.box.center_y),
+            Point(lane_x, target.box.center_y + entry_offset),
         ],
+        entry_offset=entry_offset,
     )
 
 
@@ -88,7 +115,7 @@ def _left_to_internal_route(source: NodeLayout, target: NodeLayout, layout: Diag
         "right",
         entry_side,
         [
-            Point(lane_x, source.box.center_y),
+            Point(lane_x, source.icon.center_y),
             Point(lane_x, target.box.center_y),
         ],
     )
@@ -103,8 +130,25 @@ def _edge_to_internal_route(source: NodeLayout, target: NodeLayout, layout: Diag
         "right",
         entry_side,
         [
-            Point(lane_x, source.box.center_y),
+            Point(lane_x, source.icon.center_y),
             Point(lane_x, target.box.center_y),
+        ],
+    )
+
+
+def _edge_to_ingress_route(source: NodeLayout, target: NodeLayout, layout: DiagramLayout) -> Route:
+    first_subnet_x = min(subnet_layout.box.x for subnet_layout in layout.subnet_layouts.values())
+    lane_x = min(source.box.right + 28, first_subnet_x - 34)
+    branch_y = layout.public_band.y - 60
+    return Route(
+        source.id,
+        target.id,
+        "right",
+        "top",
+        [
+            Point(lane_x, source.icon.center_y),
+            Point(lane_x, branch_y),
+            Point(target.icon.center_x, branch_y),
         ],
     )
 
@@ -125,7 +169,7 @@ def _vertical_branch_route(source: NodeLayout, target: NodeLayout, branch_y: int
 def _igw_direct_route(source: NodeLayout, target: NodeLayout, layout: DiagramLayout, route_index: int) -> Route:
     exit_side = "left" if target.icon.center_x < source.icon.center_x else "right"
     exit_x = source.icon.x if exit_side == "left" else source.icon.right
-    branch_y = (layout.public_lb_group_box.y - 20 if layout.public_lb_group_box else layout.public_band.y - 20) - route_index * 10
+    branch_y = layout.public_lb_group_box.y - 20 if layout.public_lb_group_box else layout.public_band.y - 20
     return Route(
         source.id,
         target.id,
@@ -135,6 +179,40 @@ def _igw_direct_route(source: NodeLayout, target: NodeLayout, layout: DiagramLay
             Point(exit_x, branch_y),
             Point(target.icon.center_x, branch_y),
         ],
+    )
+
+
+def _igw_subnet_route(source: NodeLayout, target: NodeLayout, layout: DiagramLayout, route_index: int, target_route_index: int) -> Route:
+    resource = target.resource
+    if not resource or not resource.subnet_id or resource.subnet_id not in layout.subnet_layouts:
+        return _igw_direct_route(source, target, layout, route_index)
+
+    subnet_box = layout.subnet_layouts[resource.subnet_id].box
+    entry_side = "right" if target.box.center_x < subnet_box.center_x else "left"
+    entry_offset = _target_entry_offset(target_route_index)
+    lane_offset = 34 + route_index * 14
+    lane_x = subnet_box.right + lane_offset if entry_side == "right" else subnet_box.x - lane_offset
+    lane_y = subnet_box.y - 34
+    if layout.public_lb_group_box and layout.subnet_layouts[resource.subnet_id].subnet.tier == "public":
+        group_box = layout.public_lb_group_box
+        if group_box.x <= lane_x <= group_box.right:
+            left_lane_x = group_box.x - 36
+            right_lane_x = group_box.right + 36
+            lane_x = left_lane_x if target.box.center_x < group_box.center_x else right_lane_x
+        lane_y = group_box.y - 26
+    exit_side = "left" if lane_x < source.icon.center_x else "right"
+    exit_x = source.icon.x if exit_side == "left" else source.icon.right
+    return Route(
+        source.id,
+        target.id,
+        exit_side,
+        entry_side,
+        [
+            Point(exit_x, lane_y),
+            Point(lane_x, lane_y),
+            Point(lane_x, target.box.center_y + entry_offset),
+        ],
+        entry_offset=entry_offset,
     )
 
 
@@ -161,16 +239,17 @@ def _subnet_to_database_route(source: NodeLayout, target: NodeLayout) -> Route:
     return Route(source.id, target.id, "bottom", "top", [Point(source.box.center_x, target.box.y - 12)])
 
 
-def _service_target_route(source: NodeLayout, target: NodeLayout, layout: DiagramLayout, route_index: int) -> Route:
+def _service_target_route(source: NodeLayout, target: NodeLayout, layout: DiagramLayout, route_index: int, target_route_index: int) -> Route:
     resource = target.resource
     entry_side = "right" if _is_left_target(target, layout) else "left"
     exit_side = "left" if entry_side == "right" else "right"
+    entry_offset = _target_entry_offset(target_route_index)
     if not resource or not resource.subnet_id or resource.subnet_id not in layout.subnet_layouts:
-        return Route(source.id, target.id, exit_side, entry_side)
+        return Route(source.id, target.id, exit_side, entry_side, entry_offset=entry_offset)
 
     subnet_box = layout.subnet_layouts[resource.subnet_id].box
     source_order = _lb_source_order(source, layout)
-    lane_offset = 18 + source_order * 16 + route_index * 8
+    lane_offset = 30 + source_order * 20 + route_index * 10
     lane_x = subnet_box.right + lane_offset if entry_side == "right" else subnet_box.x - lane_offset
     lane_y = source.box.bottom + 18 + source_order * 24
     return Route(
@@ -180,8 +259,9 @@ def _service_target_route(source: NodeLayout, target: NodeLayout, layout: Diagra
         entry_side,
         [
             Point(lane_x, lane_y),
-            Point(lane_x, target.box.center_y),
+            Point(lane_x, target.box.center_y + entry_offset),
         ],
+        entry_offset=entry_offset,
     )
 
 
@@ -190,6 +270,7 @@ def build_routes(model: DiagramModel, layout: DiagramLayout) -> list[Route]:
     nodes = layout.node_layouts
     resources = {resource.id: resource for resource in model.resources}
     outgoing: dict[str, int] = defaultdict(int)
+    incoming: dict[str, int] = defaultdict(int)
 
     for edge in model.edges:
         source = nodes.get(edge.source)
@@ -201,6 +282,8 @@ def build_routes(model: DiagramModel, layout: DiagramLayout) -> list[Route]:
         target_resource = resources.get(edge.target)
         route_index = outgoing[edge.source]
         outgoing[edge.source] += 1
+        target_route_index = incoming[edge.target]
+        incoming[edge.target] += 1
 
         if source.id == "igw" and target.kind == "waf":
             routes.append(Route(source.id, target.id, "bottom", "top"))
@@ -216,7 +299,7 @@ def build_routes(model: DiagramModel, layout: DiagramLayout) -> list[Route]:
             continue
 
         if source.id == "igw" and target_resource and target_resource.subnet_id:
-            routes.append(_igw_direct_route(source, target, layout, route_index))
+            routes.append(_igw_subnet_route(source, target, layout, route_index, target_route_index))
             continue
 
         if source_resource and source_resource.placement == "left" and target_resource and target_resource.placement == "left":
@@ -231,16 +314,20 @@ def build_routes(model: DiagramModel, layout: DiagramLayout) -> list[Route]:
             routes.append(_left_to_internal_route(source, target, layout))
             continue
 
+        if source_resource and source_resource.placement == "edge" and target.id in layout.ingress_lb_ids:
+            routes.append(_edge_to_ingress_route(source, target, layout))
+            continue
+
         if source_resource and source_resource.placement == "edge":
             routes.append(_edge_to_internal_route(source, target, layout))
             continue
 
         if source.id in layout.public_lb_ids and target_resource and target_resource.subnet_id:
-            routes.append(_lb_target_route(source, target, layout, route_index))
+            routes.append(_lb_target_route(source, target, layout, route_index, target_route_index))
             continue
 
         if source.id in layout.service_ids and target_resource and target_resource.subnet_id:
-            routes.append(_service_target_route(source, target, layout, route_index))
+            routes.append(_service_target_route(source, target, layout, route_index, target_route_index))
             continue
 
         if (
@@ -274,4 +361,8 @@ def build_routes(model: DiagramModel, layout: DiagramLayout) -> list[Route]:
 def route_points(route: Route, layout: DiagramLayout) -> list[Point]:
     source = layout.node_layouts[route.source_id]
     target = layout.node_layouts[route.target_id]
-    return [_anchor(source, route.exit_side), *route.waypoints, _anchor(target, route.entry_side)]
+    return [
+        _anchor(source, route.exit_side, route.exit_offset),
+        *route.waypoints,
+        _anchor(target, route.entry_side, route.entry_offset),
+    ]

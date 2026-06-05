@@ -240,6 +240,9 @@ def _draw_node(builder: _Builder, node: NodeLayout, public_lb_ids: set[str]) -> 
             _add_text_cell(builder, node.details[0], node.text_x, node.text_y + 6, node.box.width - 66, 18, size=11, color="#4b5563")
         if len(node.details) > 1:
             _add_text_cell(builder, node.details[1], node.text_x, node.text_y + 20, node.box.width - 66, 18, size=11, color="#4b5563")
+        if node.kind == "ec2_instance" and node.resource and node.resource.state:
+            state_color = "#047857" if node.resource.state == "running" else "#6b7280"
+            _add_text_cell(builder, node.resource.state, node.box.right - 68, node.box.bottom - 20, 60, 16, size=11, bold=True, align="right", color=state_color)
         return anchor
 
     if node.style == "service_card":
@@ -356,8 +359,24 @@ def _rule_height(rule: SecurityGroupRule) -> int:
     return max(22, len(_source_lines(rule.sources)) * 14 + 8)
 
 
+def _wrapped_item_lines(items: list[str], width: int = 88) -> list[str]:
+    lines: list[str] = []
+    current = ""
+    for item in items:
+        candidate = item if not current else f"{current}, {item}"
+        if current and len(candidate) > width:
+            lines.append(current)
+            current = item
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
 def _security_group_card_height(group: SecurityGroupSummary) -> int:
-    return max(128, 78 + sum(_rule_height(rule) for rule in group.inbound + group.outbound))
+    attached_extra = max(0, len(_wrapped_item_lines(group.attached_to)) - 1) * 16
+    return max(128, 78 + attached_extra + sum(_rule_height(rule) for rule in group.inbound + group.outbound))
 
 
 def _draw_sg_rule(builder: _Builder, box: Rect, y: int, rule: SecurityGroupRule) -> None:
@@ -398,15 +417,17 @@ def _draw_security_groups(builder: _Builder, model: DiagramModel, layout: Diagra
         builder.vertex("", _box_style(stroke="#111827", fill="#ffffff", width=1.3), box)
         builder.vertex("", "rounded=0;whiteSpace=wrap;html=1;strokeColor=#d1d5db;fillColor=#eef2f7;", Rect(box.x, box.y, box.width, 30))
         _add_text_cell(builder, f"{group.name} ({group.id})", box.x + 12, box.y + 5, box.width - 24, 20, size=15, bold=True, color="#111827")
-        attached = ", ".join(group.attached_to[:3])
-        if len(group.attached_to) > 3:
-            attached += f" +{len(group.attached_to) - 3}"
-        _add_text_cell(builder, f"Attached: {attached}", box.x + 12, box.y + 36, box.width - 24, 18, size=12)
-        _add_text_cell(builder, "Dir", box.x + 16, box.y + 58, 36, 18, size=11)
-        _add_text_cell(builder, "Proto", box.x + 58, box.y + 58, 42, 18, size=11)
-        _add_text_cell(builder, "Ports", box.x + 105, box.y + 58, 58, 18, size=11)
-        _add_text_cell(builder, "Sources / CIDRs", box.x + 172, box.y + 58, box.width - 190, 18, size=11)
-        y = box.y + 92
+        attached_lines = _wrapped_item_lines(group.attached_to)
+        attached_text = "<br>".join(
+            [f"Attached: {attached_lines[0]}"] + attached_lines[1:]
+        )
+        _add_text_cell(builder, attached_text, box.x + 12, box.y + 36, box.width - 24, len(attached_lines) * 16 + 2, size=12)
+        header_y = box.y + 58 + max(0, len(attached_lines) - 1) * 16
+        _add_text_cell(builder, "Dir", box.x + 16, header_y, 36, 18, size=11)
+        _add_text_cell(builder, "Proto", box.x + 58, header_y, 42, 18, size=11)
+        _add_text_cell(builder, "Ports", box.x + 105, header_y, 58, 18, size=11)
+        _add_text_cell(builder, "Sources / CIDRs", box.x + 172, header_y, box.width - 190, 18, size=11)
+        y = header_y + 34
         for rule in group.inbound + group.outbound:
             _draw_sg_rule(builder, box, y, rule)
             y += _rule_height(rule)

@@ -32,10 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Append security groups and rules for resources shown in the diagram",
     )
+    parser.add_argument("--state", action="store_true", help="Show EC2 instance state labels")
     parser.add_argument(
         "--full",
         action="store_true",
-        help="Include all optional sections: routes and security groups",
+        help="Include routes and security groups",
     )
     return parser
 
@@ -45,6 +46,7 @@ def main() -> int:
     args = parser.parse_args()
     show_routes = args.show_routes or args.full
     show_security_groups = args.show_security_groups or args.full
+    show_state = args.state
     output_path = Path(args.output)
     output_is_drawio = output_path.suffix.lower() == ".drawio"
     svg_path = output_path if not output_is_drawio else None
@@ -61,9 +63,14 @@ def main() -> int:
             profile=args.profile,
             show_routes=show_routes,
             show_security_groups=show_security_groups,
+            show_state=show_state,
         )
     else:
-        model = build_sample_model(show_routes=show_routes, show_security_groups=show_security_groups)
+        model = build_sample_model(
+            show_routes=show_routes,
+            show_security_groups=show_security_groups,
+            show_state=show_state,
+        )
     if svg_path:
         render_svg_to_file(model, svg_path)
         print(svg_path)

@@ -42,6 +42,8 @@ READ_ONLY_OPERATIONS = {
     ("ec2", "get-transit-gateway-route-table-associations"),
     ("ec2", "search-transit-gateway-routes"),
     ("elbv2", "describe-load-balancers"),
+    ("elbv2", "describe-listeners"),
+    ("elbv2", "describe-rules"),
     ("elbv2", "describe-target-groups"),
     ("elbv2", "describe-target-health"),
     ("rds", "describe-db-instances"),
@@ -268,13 +270,61 @@ def _load_balancer_details(load_balancer: dict) -> list[str]:
     return []
 
 
+def _listener_labels(
+    listeners: list[dict],
+    rules_by_listener: dict[str, list[dict]] | None = None,
+    backend_target_group_arns: set[str] | None = None,
+) -> list[str]:
+    labels = set()
+    rules_by_listener = rules_by_listener or {}
+    for listener in listeners:
+        if not listener.get("Protocol") or listener.get("Port") is None:
+            continue
+        listener_targets = _listener_target_group_arns([listener], rules_by_listener)
+        if backend_target_group_arns is not None:
+            if not listener_targets.intersection(backend_target_group_arns):
+                continue
+        elif (listener.get("DefaultActions") or rules_by_listener.get(listener.get("ListenerArn"), [])) and not listener_targets:
+            continue
+        labels.add(f"{listener.get('Protocol', '').upper()}:{listener.get('Port')}")
+    return sorted(labels, key=lambda label: (int(label.rsplit(":", 1)[1]), label.rsplit(":", 1)[0]))
+
+
+def _forward_target_group_arns(actions: list[dict]) -> set[str]:
+    target_group_arns: set[str] = set()
+    for action in actions:
+        if action.get("Type") != "forward":
+            continue
+        if action.get("TargetGroupArn"):
+            target_group_arns.add(action["TargetGroupArn"])
+        for target_group in action.get("ForwardConfig", {}).get("TargetGroups", []) or []:
+            if target_group.get("TargetGroupArn"):
+                target_group_arns.add(target_group["TargetGroupArn"])
+    return target_group_arns
+
+
+def _listener_target_group_arns(
+    listeners: list[dict],
+    rules_by_listener: dict[str, list[dict]] | None = None,
+) -> set[str]:
+    target_group_arns: set[str] = set()
+    rules_by_listener = rules_by_listener or {}
+    for listener in listeners:
+        target_group_arns.update(_forward_target_group_arns(listener.get("DefaultActions", []) or []))
+        listener_arn = listener.get("ListenerArn")
+        for rule in rules_by_listener.get(listener_arn, []) if listener_arn else []:
+            target_group_arns.update(_forward_target_group_arns(rule.get("Actions", []) or []))
+    return target_group_arns
+
+
 def _subnet_tier(
     subnet: dict,
     public_ids: set[str],
     database_subnet_ids: set[str],
+    public_instance_subnet_ids: set[str],
 ) -> str:
     subnet_id = subnet["SubnetId"]
-    if subnet_id in public_ids:
+    if subnet_id in public_ids or subnet_id in public_instance_subnet_ids:
         return "public"
     name = (_tag_name(subnet) or "").lower()
     if subnet_id in database_subnet_ids or any(token in name for token in ("db", "database", "rds")):
@@ -536,6 +586,7 @@ def discover_account(
     profile: str | None = None,
     show_routes: bool = False,
     show_security_groups: bool = False,
+    show_state: bool = False,
 ) -> DiagramModel:
     resolved_profile = resolve_profile(account, profile)
     if profile is None and resolved_profile is None:
@@ -619,16 +670,35 @@ def discover_account(
             if db_subnet.get("SubnetIdentifier") in subnet_lookup:
                 database_subnet_ids.add(db_subnet["SubnetIdentifier"])
 
+    instances = []
+    allowed_instance_states = {"running", "pending", "stopped"} if show_state else {"running", "pending"}
+    for reservation in reservations:
+        for instance in reservation.get("Instances", []):
+            if instance.get("SubnetId") not in subnet_lookup:
+                continue
+            if instance.get("State", {}).get("Name") not in allowed_instance_states:
+                continue
+            instances.append(instance)
+
+    public_instance_subnet_ids = {
+        instance["SubnetId"]
+        for instance in instances
+        if instance.get("SubnetId") and instance.get("PublicIpAddress")
+    }
+
+    def subnet_tier(subnet: dict) -> str:
+        return _subnet_tier(subnet, public_ids, database_subnet_ids, public_instance_subnet_ids)
+
     subnet_models = [
         Subnet(
             id=subnet["SubnetId"],
             name=_tag_name(subnet) or subnet["SubnetId"],
             cidr=subnet.get("CidrBlock", ""),
             az=subnet["AvailabilityZone"],
-            tier=_subnet_tier(subnet, public_ids, database_subnet_ids),
+            tier=subnet_tier(subnet),
             route_table_id=route_table_by_subnet.get(subnet["SubnetId"]),
         )
-        for subnet in sorted(vpc_subnets, key=lambda item: (item["AvailabilityZone"], TIER_ORDER[_subnet_tier(item, public_ids, database_subnet_ids)], item.get("CidrBlock", "")))
+        for subnet in sorted(vpc_subnets, key=lambda item: (item["AvailabilityZone"], TIER_ORDER[subnet_tier(item)], item.get("CidrBlock", "")))
     ]
     azs = sorted({subnet.az for subnet in subnet_models})
     subnet_name_by_id = {subnet.id: subnet.name for subnet in subnet_models}
@@ -745,18 +815,10 @@ def discover_account(
             )
         )
 
-    instances = []
-    for reservation in reservations:
-        for instance in reservation.get("Instances", []):
-            if instance.get("SubnetId") not in subnet_lookup:
-                continue
-            if instance.get("State", {}).get("Name") not in {"running", "pending", "stopped"}:
-                continue
-            instances.append(instance)
-
     instance_resource_ids: dict[str, str] = {}
     for instance in instances:
         subnet = subnet_lookup[instance["SubnetId"]]
+        instance_state = instance.get("State", {}).get("Name")
         group_label = None
         for tag in instance.get("Tags", []) or []:
             if tag.get("Key") == "aws:autoscaling:groupName":
@@ -786,6 +848,7 @@ def discover_account(
                 security_group_ids=[
                     group["GroupId"] for group in instance.get("SecurityGroups", []) or [] if group.get("GroupId")
                 ],
+                state=instance_state if show_state else None,
             )
         )
         if group_label:
@@ -794,9 +857,76 @@ def discover_account(
 
     load_balancers_in_vpc = [lb for lb in load_balancers if lb.get("VpcId") == vpc_id]
     lb_resource_ids: dict[str, str] = {}
+    listeners_by_lb: dict[str, list[dict]] = {}
+    rules_by_listener: dict[str, list[dict]] = {}
     for load_balancer in load_balancers_in_vpc:
+        lb_arn = load_balancer["LoadBalancerArn"]
         lb_id = f"lb-{load_balancer['LoadBalancerName']}"
-        lb_resource_ids[load_balancer["LoadBalancerArn"]] = lb_id
+        lb_resource_ids[lb_arn] = lb_id
+        listeners = _run_best_effort(
+            resolved_profile,
+            region,
+            "elbv2",
+            "describe-listeners",
+            ["--load-balancer-arn", lb_arn],
+        ).get("Listeners", [])
+        listeners_by_lb[lb_arn] = listeners
+        for listener in listeners:
+            listener_arn = listener.get("ListenerArn")
+            if not listener_arn:
+                continue
+            rules_by_listener[listener_arn] = _run_best_effort(
+                resolved_profile,
+                region,
+                "elbv2",
+                "describe-rules",
+                ["--listener-arn", listener_arn],
+            ).get("Rules", [])
+
+    target_group_ids_by_lb: dict[str, list[str]] = defaultdict(list)
+    for target_group in target_groups:
+        for lb_arn in target_group.get("LoadBalancerArns", []):
+            if lb_arn in lb_resource_ids:
+                target_group_ids_by_lb[lb_arn].append(target_group["TargetGroupArn"])
+
+    backend_edges_by_lb: dict[str, list[Edge]] = defaultdict(list)
+    backend_target_group_arns_by_lb: dict[str, set[str]] = defaultdict(set)
+    for lb_arn, target_group_arns in target_group_ids_by_lb.items():
+        source = lb_resource_ids[lb_arn]
+        listener_target_group_arns = _listener_target_group_arns(listeners_by_lb.get(lb_arn, []), rules_by_listener)
+        scoped_target_group_arns = [
+            target_group_arn
+            for target_group_arn in target_group_arns
+            if not listener_target_group_arns or target_group_arn in listener_target_group_arns
+        ]
+        for target_group_arn in scoped_target_group_arns:
+            health = _run_best_effort(
+                resolved_profile,
+                region,
+                "elbv2",
+                "describe-target-health",
+                ["--target-group-arn", target_group_arn],
+            )
+            for target in health.get("TargetHealthDescriptions", []):
+                target_id = target.get("Target", {}).get("Id")
+                if target_id in instance_resource_ids:
+                    backend_edges_by_lb[lb_arn].append(Edge(source, instance_resource_ids[target_id]))
+                    backend_target_group_arns_by_lb[lb_arn].add(target_group_arn)
+
+    load_balancers_with_backends = [
+        load_balancer
+        for load_balancer in load_balancers_in_vpc
+        if backend_edges_by_lb.get(load_balancer["LoadBalancerArn"])
+    ]
+
+    lb_resource_ids = {
+        load_balancer["LoadBalancerArn"]: lb_resource_ids[load_balancer["LoadBalancerArn"]]
+        for load_balancer in load_balancers_with_backends
+    }
+
+    for load_balancer in load_balancers_with_backends:
+        lb_arn = load_balancer["LoadBalancerArn"]
+        lb_id = lb_resource_ids[lb_arn]
         kind = "nlb" if load_balancer.get("Type") == "network" else "alb"
         placement = "ingress" if load_balancer.get("Scheme") == "internet-facing" else "service"
         resources.append(
@@ -809,8 +939,14 @@ def discover_account(
                 public=placement == "ingress",
                 internal=placement == "service",
                 security_group_ids=load_balancer.get("SecurityGroups", []) or [],
+                listeners=_listener_labels(
+                    listeners_by_lb.get(lb_arn, []),
+                    rules_by_listener,
+                    backend_target_group_arns_by_lb.get(lb_arn, set()),
+                ),
             )
         )
+        edges.extend(backend_edges_by_lb[lb_arn])
         if placement == "service":
             internal_service_targets.append(lb_id)
 
@@ -834,7 +970,7 @@ def discover_account(
         )
         endpoint_targets.append(f"vpce-{endpoint['VpcEndpointId']}")
 
-    internet_facing_lbs = [lb for lb in load_balancers_in_vpc if lb.get("Scheme") == "internet-facing"]
+    internet_facing_lbs = [lb for lb in load_balancers_with_backends if lb.get("Scheme") == "internet-facing"]
     waf_resources, waf_edges = _collect_waf_edges(resolved_profile, region, internet_facing_lbs)
     resources.extend(waf_resources)
     edges.extend(waf_edges)
@@ -850,27 +986,6 @@ def discover_account(
     for instance in instances:
         if instance.get("PublicIpAddress"):
             edges.append(Edge("igw", instance_resource_ids[instance["InstanceId"]]))
-
-    target_group_ids_by_lb: dict[str, list[str]] = defaultdict(list)
-    for target_group in target_groups:
-        for lb_arn in target_group.get("LoadBalancerArns", []):
-            if lb_arn in lb_resource_ids:
-                target_group_ids_by_lb[lb_arn].append(target_group["TargetGroupArn"])
-
-    for lb_arn, target_group_arns in target_group_ids_by_lb.items():
-        source = lb_resource_ids[lb_arn]
-        for target_group_arn in target_group_arns:
-            health = _run_best_effort(
-                resolved_profile,
-                region,
-                "elbv2",
-                "describe-target-health",
-                ["--target-group-arn", target_group_arn],
-            )
-            for target in health.get("TargetHealthDescriptions", []):
-                target_id = target.get("Target", {}).get("Id")
-                if target_id in instance_resource_ids:
-                    edges.append(Edge(source, instance_resource_ids[target_id]))
 
     for db in db_instances:
         subnet_group = db.get("DBSubnetGroup", {})

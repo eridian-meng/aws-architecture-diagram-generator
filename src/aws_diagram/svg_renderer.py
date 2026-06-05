@@ -39,6 +39,8 @@ def _header(layout: DiagramLayout) -> list[str]:
         "      .lb-label { font: 700 12px Arial, sans-serif; fill: #111827; }",
         "      .small { font: 500 12px Arial, sans-serif; fill: #374151; }",
         "      .tiny { font: 500 11px Arial, sans-serif; fill: #4b5563; }",
+        "      .state-running { font: 700 11px Arial, sans-serif; fill: #047857; }",
+        "      .state-default { font: 700 11px Arial, sans-serif; fill: #6b7280; }",
         "      .outer { fill: #ffffff; stroke: #111827; stroke-width: 2; }",
         "      .vpc { fill: #ffffff; stroke: #111827; stroke-width: 2; }",
         "      .az { fill: none; stroke: #f59e0b; stroke-width: 2; stroke-dasharray: 10 8; }",
@@ -173,6 +175,9 @@ def _draw_card(node: NodeLayout) -> list[str]:
         for wrapped in _split_line(detail, 24):
             lines.append(_text(node.text_x, text_y, wrapped, "tiny"))
             text_y += 13
+    if node.kind == "ec2_instance" and node.resource and node.resource.state:
+        state_class = "state-running" if node.resource.state == "running" else "state-default"
+        lines.append(_text(node.box.right - 8, node.box.bottom - 8, node.resource.state, state_class, "end"))
     return lines
 
 
@@ -183,6 +188,10 @@ def _draw_service_card(node: NodeLayout) -> list[str]:
     for line in label_lines:
         lines.append(_text(node.text_x, text_y, line, "label", "middle"))
         text_y += 16
+    if node.resource and node.resource.listeners:
+        for wrapped in _split_line(", ".join(node.resource.listeners[:4]), 24):
+            lines.append(_text(node.text_x, text_y, wrapped, "tiny", "middle"))
+            text_y += 13
     if node.details:
         for wrapped in _split_line(node.details[0], 22):
             lines.append(_text(node.text_x, text_y, wrapped, "tiny", "middle"))
@@ -210,6 +219,10 @@ def _draw_icon_label(node: NodeLayout, label_only: bool = False) -> list[str]:
     for line in label_lines:
         lines.append(_text(node.text_x, text_y, line, label_class, node.text_anchor))
         text_y += 12 if vertical_label else 15
+    if node.resource and node.resource.listeners:
+        for wrapped in _split_line(", ".join(node.resource.listeners[:4]), 28):
+            lines.append(_text(node.text_x, text_y, wrapped, "tiny", node.text_anchor))
+            text_y += 12
     if not label_only:
         for detail in node.details[:2]:
             for wrapped in _split_line(detail, 22):
@@ -339,6 +352,21 @@ def _source_lines(sources: list[str], width: int = 72) -> list[str]:
     return lines or [""]
 
 
+def _wrapped_item_lines(items: list[str], width: int = 88) -> list[str]:
+    lines: list[str] = []
+    current = ""
+    for item in items:
+        candidate = item if not current else f"{current}, {item}"
+        if current and len(candidate) > width:
+            lines.append(current)
+            current = item
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
 def _rule_height(rule: SecurityGroupRule) -> int:
     return max(22, len(_source_lines(rule.sources)) * 14 + 8)
 
@@ -357,7 +385,8 @@ def _draw_sg_rule(box: Rect, y: int, rule: SecurityGroupRule) -> list[str]:
 
 
 def _security_group_card_height(group: SecurityGroupSummary) -> int:
-    return max(128, 78 + sum(_rule_height(rule) for rule in group.inbound + group.outbound))
+    attached_extra = max(0, len(_wrapped_item_lines(group.attached_to)) - 1) * 16
+    return max(128, 78 + attached_extra + sum(_rule_height(rule) for rule in group.inbound + group.outbound))
 
 
 def _draw_security_groups(model: DiagramModel, layout: DiagramLayout) -> list[str]:
@@ -382,15 +411,16 @@ def _draw_security_groups(model: DiagramModel, layout: DiagramLayout) -> list[st
         lines.append(_rect(box, "sg-card", 8, 8))
         lines.append(_rect(Rect(box.x, box.y, box.width, 30), "sg-head", 8, 8))
         lines.append(_text(box.x + 12, box.y + 20, f"{group.name} ({group.id})", "label"))
-        attached = ", ".join(group.attached_to[:3])
-        if len(group.attached_to) > 3:
-            attached += f" +{len(group.attached_to) - 3}"
-        lines.append(_text(box.x + 12, box.y + 48, f"Attached: {attached}", "small"))
-        lines.append(_text(box.x + 16, box.y + 70, "Dir", "tiny"))
-        lines.append(_text(box.x + 58, box.y + 70, "Proto", "tiny"))
-        lines.append(_text(box.x + 105, box.y + 70, "Ports", "tiny"))
-        lines.append(_text(box.x + 172, box.y + 70, "Sources / CIDRs", "tiny"))
-        y = box.y + 92
+        attached_lines = _wrapped_item_lines(group.attached_to)
+        for line_index, line in enumerate(attached_lines):
+            prefix = "Attached: " if line_index == 0 else ""
+            lines.append(_text(box.x + 12, box.y + 48 + line_index * 16, f"{prefix}{line}", "small"))
+        header_y = box.y + 70 + max(0, len(attached_lines) - 1) * 16
+        lines.append(_text(box.x + 16, header_y, "Dir", "tiny"))
+        lines.append(_text(box.x + 58, header_y, "Proto", "tiny"))
+        lines.append(_text(box.x + 105, header_y, "Ports", "tiny"))
+        lines.append(_text(box.x + 172, header_y, "Sources / CIDRs", "tiny"))
+        y = header_y + 22
         rules = group.inbound + group.outbound
         for rule in rules:
             lines.extend(_draw_sg_rule(box, y, rule))

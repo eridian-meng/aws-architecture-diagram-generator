@@ -192,10 +192,24 @@ def _rule_source_line_count(rule: SecurityGroupRule, width: int = 72) -> int:
     return lines
 
 
+def _wrapped_item_line_count(items: list[str], width: int = 88) -> int:
+    lines = 1
+    current = 0
+    for item in items:
+        item_length = len(item) + (2 if current else 0)
+        if current and current + item_length > width:
+            lines += 1
+            current = len(item)
+        else:
+            current += item_length
+    return lines
+
+
 def _security_group_height(group: SecurityGroupSummary) -> int:
     rules = group.inbound + group.outbound
+    attached_extra = max(0, _wrapped_item_line_count(group.attached_to) - 1) * 16
     rule_height = sum(max(22, _rule_source_line_count(rule) * 14 + 8) for rule in rules)
-    return max(128, 78 + rule_height)
+    return max(128, 78 + attached_extra + rule_height)
 
 
 def _security_group_appendix_height(groups: list[SecurityGroupSummary]) -> int:
@@ -366,7 +380,14 @@ def build_layout(model: DiagramModel) -> DiagramLayout:
         grouped, ungrouped = _display_items(resources_by_subnet.get(subnet.id, []))
         content_y = layout.box.y + 40
         if layout.subnet.tier == "public":
-            for resource in ungrouped:
+            public_resources = list(ungrouped)
+            for group_id, members in grouped.items():
+                group = group_lookup.get(group_id)
+                if group and group.member_ids:
+                    member_rank = {member_id: index for index, member_id in enumerate(group.member_ids)}
+                    members = sorted(members, key=lambda member: member_rank.get(member.id, len(member_rank)))
+                public_resources.extend(members)
+            for resource in public_resources:
                 row_box = Rect(layout.box.x + 28, content_y, min(220, layout.box.width - 56), 56)
                 icon = Rect(row_box.x + 8, row_box.y + 8, 40, 40)
                 add_node(resource, row_box, icon, "card", row_box.x + 58, row_box.y + 18)
@@ -412,12 +433,14 @@ def build_layout(model: DiagramModel) -> DiagramLayout:
     public_lb_group_box: Rect | None = None
     if lb_band_resources:
         tall_public_labels = any(_prefers_vertical_label(resource.label) for resource in lb_band_resources)
+        has_listener_labels = any(resource.listeners for resource in lb_band_resources)
         box_width = 165
         gap = 34
         total_width = len(lb_band_resources) * box_width + max(0, len(lb_band_resources) - 1) * gap
         current_x = corridor.center_x - total_width // 2
-        group_height = 118 if tall_public_labels else 82
-        node_height = 108 if tall_public_labels else 92
+        listener_extra = 18 if has_listener_labels else 0
+        group_height = (118 if tall_public_labels else 82) + listener_extra
+        node_height = (108 if tall_public_labels else 92) + listener_extra
         public_lb_group_box = Rect(current_x - 14, public_y + 34, total_width + 28, group_height)
         for resource in lb_band_resources:
             box = Rect(current_x, public_y + 42, box_width, node_height)

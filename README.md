@@ -100,10 +100,16 @@ draw --account <acct> --region <region> --vpc <vpc-id-or-name> --show-security-g
 
 The security group appendix includes only security groups attached to resources shown in the diagram, such as load balancers, EC2 instances, and RDS instances. Rules are summarized by direction, protocol, port range, and source CIDRs/security group references.
 
-Use `--full` to include all optional sections:
+Use `--full` to include routes and security groups:
 
 ```bash
 draw --account <acct> --region <region> --vpc <vpc-id-or-name> --full --output diagrams/<name>.svg
+```
+
+Use `--state` when you want EC2 instance state labels and stopped instances:
+
+```bash
+draw --account <acct> --region <region> --vpc <vpc-id-or-name> --state --output diagrams/<name>.svg
 ```
 
 ## Global `draw` Command

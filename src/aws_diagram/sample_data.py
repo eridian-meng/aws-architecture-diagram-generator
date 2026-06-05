@@ -13,7 +13,11 @@ from aws_diagram.models import (
 )
 
 
-def build_sample_model(show_routes: bool = False, show_security_groups: bool = False) -> DiagramModel:
+def build_sample_model(
+    show_routes: bool = False,
+    show_security_groups: bool = False,
+    show_state: bool = False,
+) -> DiagramModel:
     subnets = [
         Subnet("subnet-public-a", "Example-Public-us-east-1a", "10.0.0.0/27", "us-east-1a", "public", "rtb-public-a"),
         Subnet("subnet-private-a", "Example-Private-us-east-1a", "10.0.0.64/27", "us-east-1a", "private", "rtb-private-a"),
@@ -28,15 +32,14 @@ def build_sample_model(show_routes: bool = False, show_security_groups: bool = F
         Resource("tgw-peer", "tgw_peering", "Peering", ["tgw-peer-example"], placement="left"),
         Resource("igw", "internet_gateway", "Internet Gateway", ["igw-example"], placement="ingress"),
         Resource("waf", "waf", "Example-Web-ACL", ["web-acl-example"], placement="ingress"),
-        Resource("public-elb", "alb", "Public-App-ALB", [], placement="ingress", public=True, security_group_ids=["sg-alb"]),
-        Resource("test-lb", "alb", "Public-Web-ALB", [], placement="ingress", public=True),
-        Resource("temp-lb", "alb", "Partner-Access-ALB", [], placement="ingress", public=True),
-        Resource("mirror-elb", "alb", "Shared-Services-ALB", [], placement="ingress", public=True),
-        Resource("sftp-elb", "nlb", "SFTP-NLB", ["198.51.100.20"], placement="ingress", public=True),
+        Resource("public-elb", "alb", "Public-App-ALB", [], placement="ingress", public=True, security_group_ids=["sg-alb"], listeners=["HTTPS:443"]),
+        Resource("test-lb", "alb", "Public-Web-ALB", [], placement="ingress", public=True, listeners=["HTTP:80"]),
+        Resource("temp-lb", "alb", "Partner-Access-ALB", [], placement="ingress", public=True, listeners=["HTTPS:443"]),
+        Resource("mirror-elb", "alb", "Shared-Services-ALB", [], placement="ingress", public=True, listeners=["HTTPS:8443"]),
+        Resource("sftp-elb", "nlb", "SFTP-NLB", ["198.51.100.20"], placement="ingress", public=True, listeners=["TCP:22"]),
         Resource("nat-a", "nat_gateway", "NAT-us-east-1a", ["198.51.100.10", "10.0.0.10"], az="us-east-1a", subnet_id="subnet-public-a"),
         Resource("nat-b", "nat_gateway", "NAT-us-east-1b", ["198.51.100.11", "10.0.0.42"], az="us-east-1b", subnet_id="subnet-public-b"),
-        Resource("app-a1", "ec2_instance", "App-Server-A1", ["10.0.0.73"], az="us-east-1a", subnet_id="subnet-private-a", group="sg-app-a", security_group_ids=["sg-app"]),
-        Resource("web-a1", "ec2_instance", "Web-Server-A1", ["10.0.0.74"], az="us-east-1a", subnet_id="subnet-private-a", group="sg-app-a"),
+        Resource("app-a1", "ec2_instance", "App-Server-A1", ["10.0.0.73"], az="us-east-1a", subnet_id="subnet-private-a", group="sg-app-a", security_group_ids=["sg-app"], state="running" if show_state else None),
         Resource("partner-a1", "ec2_instance", "Partner-Worker-A1", ["10.0.0.75"], az="us-east-1a", subnet_id="subnet-private-a", group="sg-app-a"),
         Resource("ops-a1", "ec2_instance", "Ops-Node-A1", ["10.0.0.76"], az="us-east-1a", subnet_id="subnet-private-a", group="sg-app-a"),
         Resource("shared-b1", "ec2_instance", "Shared-Node-B1", ["10.0.0.101"], az="us-east-1b", subnet_id="subnet-private-b", group="sg-app-b"),
@@ -46,8 +49,17 @@ def build_sample_model(show_routes: bool = False, show_security_groups: bool = F
         Resource("db-b", "ec2_instance", "Database-Node-B", ["10.0.0.141"], az="us-east-1b", subnet_id="subnet-db-b", group="sg-db-b"),
     ]
 
+    if show_state:
+        resources.append(
+            Resource("web-a1", "ec2_instance", "Web-Server-A1", ["10.0.0.74"], az="us-east-1a", subnet_id="subnet-private-a", group="sg-app-a", state="stopped")
+        )
+
+    app_a_members = ["app-a1", "partner-a1", "ops-a1"]
+    if show_state:
+        app_a_members.insert(1, "web-a1")
+
     groups = [
-        Group("sg-app-a", "Example-App-Access", ["app-a1", "web-a1", "partner-a1", "ops-a1"], "security_group"),
+        Group("sg-app-a", "Example-App-Access", app_a_members, "security_group"),
         Group("sg-app-b", "Example-App-Access", ["shared-b1", "shared-b2", "api-b1"], "security_group"),
         Group("sg-db-a", "Example-Database", ["db-a"], "security_group"),
         Group("sg-db-b", "Example-Database", ["db-b"], "security_group"),

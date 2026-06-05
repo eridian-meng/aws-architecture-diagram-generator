@@ -26,6 +26,8 @@ class Resource:
     public: bool = False
     internal: bool = False
     security_group_ids: list[str] = field(default_factory=list)
+    state: str | None = None
+    listeners: list[str] = field(default_factory=list)
 
 
 @dataclass
