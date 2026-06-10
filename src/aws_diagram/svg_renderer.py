@@ -166,13 +166,16 @@ def _draw_user(node: NodeLayout) -> list[str]:
 
 def _draw_card(node: NodeLayout) -> list[str]:
     lines = [_rect(node.box, "card", 6, 6), _image(ICON_BY_KIND.get(node.kind, "ec2_instance"), node.icon.x, node.icon.y, node.icon.width, node.icon.height)]
-    label_lines = _split_line(node.label, 28)
+    text_width = max(80, node.box.right - node.text_x - 10)
+    label_width = max(18, text_width // 7)
+    detail_width = max(16, text_width // 7)
+    label_lines = _split_line(node.label, label_width)
     text_y = node.text_y
     for line in label_lines:
         lines.append(_text(node.text_x, text_y, line, "small"))
         text_y += 14
     for detail in node.details[:2]:
-        for wrapped in _split_line(detail, 24):
+        for wrapped in _split_line(detail, detail_width):
             lines.append(_text(node.text_x, text_y, wrapped, "tiny"))
             text_y += 13
     if node.kind == "ec2_instance" and node.resource and node.resource.state:

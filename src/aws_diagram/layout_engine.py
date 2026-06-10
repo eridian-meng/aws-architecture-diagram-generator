@@ -388,7 +388,7 @@ def build_layout(model: DiagramModel) -> DiagramLayout:
                     members = sorted(members, key=lambda member: member_rank.get(member.id, len(member_rank)))
                 public_resources.extend(members)
             for resource in public_resources:
-                row_box = Rect(layout.box.x + 28, content_y, min(220, layout.box.width - 56), 56)
+                row_box = Rect(layout.box.x + 34, content_y, layout.box.width - 68, 56)
                 icon = Rect(row_box.x + 8, row_box.y + 8, 40, 40)
                 add_node(resource, row_box, icon, "card", row_box.x + 58, row_box.y + 18)
                 layout.ungrouped_ids.append(resource.id)
